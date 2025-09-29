@@ -43,3 +43,14 @@ methods, and code.
 Each figure page in **Figures** includes the code snippet used to generate it.
 
 ---
+
+### Damping behavior and regime split
+
+![Damping ratio vs mass](figures/damping_vs_mass_split_fits.png)
+
+*Caption*: (see paper; brief web caption here)
+
+### Observed vs predicted masses (marker encodes damping)
+
+![Observed vs predicted masses](figures/obs_vs_pred_damping_markers.png)
+
