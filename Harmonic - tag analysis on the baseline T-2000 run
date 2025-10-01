@@ -1,0 +1,162 @@
+# Harmonic-tag analysis on the baseline T=2000 run.
+# Goal: detect top FFT peaks and check if they align with harmonics (k*f0) of the three carriers
+# f0 in {1/3, 1/4, 1/2.15}. We'll output a tagged peak table and a figure.
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# --- Recompute baseline M(T) exactly as before ---
+import math
+from collections import Counter
+from typing import List, Tuple
+
+def remove_factors(n: int, b: int) -> int:
+    if b <= 1:
+        return n
+    x = b
+    p = 2
+    while p * p <= x:
+        while x % p == 0:
+            while n % p == 0:
+                n //= p
+            x //= p
+        p += 1 if p == 2 else 2
+    if x > 1:
+        while n % x == 0:
+            n //= x
+    return n
+
+def multiplicative_order(b: int, m: int, max_steps: int = 200000) -> int:
+    if m <= 1 or math.gcd(b, m) != 1:
+        return 0
+    val = 1
+    for k in range(1, max_steps+1):
+        val = (val * b) % m
+        if val == 1:
+            return k
+    return 0
+
+def repetend_digits(numerator: int, denominator: int, base: int, max_len: int = 20000) -> List[int]:
+    if denominator == 0:
+        return []
+    rem_pos = {}
+    digits = []
+    rem = numerator % denominator
+    pos = 0
+    while rem != 0 and rem not in rem_pos and pos < max_len:
+        rem_pos[rem] = pos
+        rem *= base
+        digit = rem // denominator
+        digits.append(int(digit))
+        rem = rem % denominator
+        pos += 1
+    if rem == 0 or pos >= max_len:
+        return []
+    start = rem_pos[rem]
+    return digits[start:]
+
+def shannon_entropy(digs: List[int], base: int) -> float:
+    if not digs:
+        return 0.0
+    cnt = Counter(digs)
+    N = len(digs)
+    ent = 0.0
+    for c in cnt.values():
+        p = c / N
+        if p > 0.0:
+            ent -= p * (math.log(p) / math.log(base))
+    return ent
+
+def compute_M_T(T_max: int, bases: Tuple[int,...], numerator: int):
+    M_vals = np.zeros(T_max, dtype=float)
+    for T in range(1, T_max+1):
+        m = 5*T + 1
+        M_sum = 0.0
+        for b in bases:
+            mprime = remove_factors(m, b)
+            Lb = multiplicative_order(b, mprime)
+            H = 0.0
+            if Lb > 0:
+                rep = repetend_digits(numerator, m, b)
+                H = shannon_entropy(rep, b)
+            M_sum += Lb * H
+        M_vals[T-1] = M_sum / len(bases)
+    return M_vals
+
+def fft_power(signal: np.ndarray):
+    sig = signal - signal.mean()
+    fft_vals = np.fft.fft(sig)
+    freqs = np.fft.fftfreq(len(sig), d=1.0)
+    mask = freqs > 0
+    return freqs[mask], np.abs(fft_vals[mask])**2
+
+T_max = 2000
+bases = (2,3,5,7,10)
+numerator = 6
+
+M = compute_M_T(T_max, bases, numerator)
+freqs_pos, power = fft_power(M)
+
+# --- Peak detection ---
+# Simple approach: find local maxima above a percentile threshold
+from scipy.signal import find_peaks
+
+# Use log-power threshold to stabilize
+logp = np.log10(power + 1e-12)
+peaks, props = find_peaks(logp, prominence=0.5)  # tune as needed
+peak_freqs = freqs_pos[peaks]
+peak_power = power[peaks]
+
+# Sort by power and keep top N
+Nkeep = 60
+order = np.argsort(peak_power)[::-1][:Nkeep]
+peak_freqs = peak_freqs[order]
+peak_power = peak_power[order]
+
+# --- Harmonic tagging ---
+carriers = {"P3": 1/3.0, "P4": 1/4.0, "P2_15": 1/2.15}
+tags = []
+
+tol = 1.5 * (1.0 / T_max)  # ~1.5 FFT bins
+for f, p in zip(peak_freqs, peak_power):
+    tag = []
+    for name, f0 in carriers.items():
+        # consider integer harmonics k up to Nyquist
+        kmax = int(np.floor(0.5 / f0))
+        for k in range(1, kmax+1):
+            fh = k * f0
+            if abs(f - fh) <= tol:
+                tag.append(f"{name} x{k}")
+    tags.append(", ".join(tag) if tag else "")
+
+df = pd.DataFrame({
+    "peak_freq": peak_freqs,
+    "peak_period": 1.0/peak_freqs,
+    "power": peak_power,
+    "harmonic_tag": tags
+}).sort_values("power", ascending=False).reset_index(drop=True)
+
+out_csv = "/mnt/data/harmonic_tag_baseline_T2000.csv"
+df.to_csv(out_csv, index=False)
+
+# --- Visualization: plot spectrum and draw markers for harmonics ---
+plt.figure(figsize=(11.5,6))
+plt.semilogy(freqs_pos, power, linewidth=0.9, label="Power")
+colors = {"P3":"#ef4444","P4":"#10b981","P2_15":"#f59e0b"}
+for name, f0 in carriers.items():
+    k = 1
+    while k*f0 < 0.5:
+        f = k*f0
+        plt.axvline(f, linestyle="--", linewidth=1.0)
+        k += 1
+plt.xlabel("Frequency (cycles per shell)")
+plt.ylabel("Power (log scale)")
+plt.title("Baseline T=2000: FFT with harmonic rails for P≈3, 4, 2.15")
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+out_png = "/mnt/data/harmonic_rails_baseline_T2000.png"
+plt.savefig(out_png, dpi=200, bbox_inches="tight")
+plt.close()
+
+out_csv, out_png
